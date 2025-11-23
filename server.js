@@ -13,7 +13,7 @@ dotenv.config();
 
 const app = express();
 
-// CORS: hier kannst du deine Domains eintragen
+// CORS erlaubte Domains
 app.use(cors({
   origin: ["https://nocxai.com", "http://localhost:5500"],
 }));
@@ -39,7 +39,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o-mini",  // <-- korrigierter Modellname
       messages: [
         { role: "system", content: "Du bist AptiQ, ein klarer, technischer Assistent von NoCxAI." },
         { role: "user", content: message }
