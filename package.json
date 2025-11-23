@@ -1,0 +1,26 @@
+{
+  "name": "aptiq-server",
+  "version": "1.0.0",
+  "description": "AptiQ Backend",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "docx": "^9.5.1",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "multer": "^2.0.2",
+    "openai": "^4.104.0",
+    "pdf-parse": "^2.4.5"
+  },
+  "devDependencies": {
+    "electron": "^39.2.2",
+    "electron-builder": "^26.0.12"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
