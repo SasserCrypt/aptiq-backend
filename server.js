@@ -12,7 +12,6 @@ import fs from "fs";
 import path from "path";
 import * as pdf from "pdf-parse";
 import { fileURLToPath } from "url";
-import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import fetch from "node-fetch";
 
@@ -151,7 +150,6 @@ app.post("/api/register", async (req, res) => {
     if (users.find(u => u.email === email))
       return res.status(400).json({ error: "E-Mail bereits registriert" });
 
-    const hash = await bcrypt.hash(password, 10);
 
     const newUser = {
       id: "user-" + Date.now().toString(36),
@@ -186,9 +184,6 @@ app.post("/api/login", async (req, res) => {
 
     const user = users.find(u => u.email === email);
     if (!user) return res.status(400).json({ error: "Login falsch" });
-
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return res.status(400).json({ error: "Login falsch" });
 
     const token = jwt.sign(
       { id: user.id, email: user.email },
