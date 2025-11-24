@@ -1,244 +1,186 @@
-// ===============================
-// AptiQ Backend – Multi-Provider
-// + Datei-Upload (PDF/TXT) mit KI-Analyse
-// ===============================
+// =============================
+// APTIQ – SERVER.JS (FINAL)
+// =============================
 
 import express from "express";
-import cors from "cors";
 import dotenv from "dotenv";
-import OpenAI from "openai";
+import cors from "cors";
+import { createClient } from "@supabase/supabase-js";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 import multer from "multer";
-import * as pdfParse from "pdf-parse";
-import fs from "fs/promises";
-import path from "path";
+import fs from "fs";
 
 dotenv.config();
 
 const app = express();
-
-// Body Parser & CORS
+app.use(cors());
 app.use(express.json());
-app.use(cors({
-  origin: ["https://nocxai.com", "http://localhost:5500"]
-}));
 
-// File Upload (temporary dir)
-const upload = multer({ dest: "/tmp/aptiq_uploads" });
+// SUPABASE CLIENT
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// OPTIONAL: OpenAI client
-const openaiClient = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+// JWT
+const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 
-// =============================================
-// Utils
-// =============================================
-function extractMessage(req) {
-  return req.body?.message || null;
-}
+// FILE UPLOAD HANDLER
+const upload = multer({ dest: "uploads/" });
 
-function resolveMode(req) {
-  return req.body?.mode || "web";
-}
-
-// =============================================
-// Provider-Calls
-// =============================================
-
-// LLaMA 3.1 via Groq
-async function callGroq(message, systemPrompt = "Du bist AptiQ, ein technischer Assistent.") {
-  if (!process.env.GROQ_API_KEY) {
-    throw new Error("GROQ_API_KEY fehlt.");
-  }
-
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "llama-3.1-8b-instant",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message }
-      ]
-    })
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(`Groq-Fehler: ${JSON.stringify(data)}`);
-  }
-
-  return data.choices?.[0]?.message?.content?.trim() ?? "Keine Antwort.";
-}
-
-// OpenAI
-async function callOpenAI(message, systemPrompt = "Du bist AptiQ, ein technischer Assistent.") {
-  if (!openaiClient) {
-    throw new Error("OPENAI_API_KEY fehlt.");
-  }
-
-  const completion = await openaiClient.chat.completions.create({
-    model: "gpt-4.1-mini",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: message }
-    ]
-  });
-
-  return completion.choices[0].message.content.trim();
-}
-
-// HuggingFace
-async function callHF(message, systemPrompt = "Du bist AptiQ, ein technischer Assistent.") {
-  if (!process.env.HF_API_KEY) {
-    throw new Error("HF_API_KEY fehlt.");
-  }
-
-  const model = process.env.HF_MODEL_ID || "HuggingFaceH4/zephyr-7b-beta";
-
-  const res = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.HF_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      inputs: `${systemPrompt}\n\nNutzer: ${message}`
-    })
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(`HF-Fehler: ${JSON.stringify(data)}`);
-  }
-
-  return data[0]?.generated_text || JSON.stringify(data);
-}
-
-// Provider dispatch
-async function callProvider(model, message, systemPrompt) {
-  if (model === "openai") return callOpenAI(message, systemPrompt);
-  if (model === "hf") return callHF(message, systemPrompt);
-  // Default: LLaMA / Groq
-  return callGroq(message, systemPrompt);
-}
-
-// =============================================
-// Healthcheck
-// =============================================
-app.get("/", (req, res) => {
-  res.json({
-    status: "AptiQ Backend läuft 🔥",
-    providers: {
-      llama_groq: !!process.env.GROQ_API_KEY,
-      huggingface: !!process.env.HF_API_KEY,
-      openai: !!process.env.OPENAI_API_KEY
-    }
-  });
-});
-
-// =============================================
-// Chat Endpoint
-// =============================================
-app.post("/api/chat", async (req, res) => {
+// =============================
+// AUTH
+// =============================
+app.post("/register", async (req, res) => {
   try {
-    const message = extractMessage(req);
-    const model = req.body?.model || "llama";
-    const mode = resolveMode(req);
+    const { email, password, username } = req.body;
 
-    if (!message) {
-      return res.status(400).json({ error: "message fehlt" });
-    }
-
-    const reply = await callProvider(
-      model,
-      message,
-      `Du bist AptiQ, ein klarer, technischer Assistent von NoCxAI. Modus: ${mode}.`
-    );
-
-    res.json({ reply, model, mode });
-  } catch (err) {
-    console.error("AptiQ Fehler /api/chat:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =============================================
-// Datei-Upload & Analyse Endpoint
-// =============================================
-
-async function extractTextFromFile(filePath, originalName) {
-  const ext = path.extname(originalName || "").toLowerCase();
-
-  if (ext === ".pdf") {
-    const data = await fs.readFile(filePath);
-    const pdfData = await pdfParse.default(data);
-    return pdfData.text || "";
-  }
-
-  if (ext === ".txt") {
-    const data = await fs.readFile(filePath, "utf-8");
-    return data;
-  }
-
-  // Weitere Formate (docx, etc.) könnten später folgen
-  throw new Error("Nur PDF und TXT werden aktuell unterstützt.");
-}
-
-app.post("/api/upload", upload.single("file"), async (req, res) => {
-  const file = req.file;
-  const model = req.body?.model || "llama";
-
-  if (!file) {
-    return res.status(400).json({ error: "Keine Datei hochgeladen." });
-  }
-
-  try {
-    const text = await extractTextFromFile(file.path, file.originalname);
-
-    if (!text || text.trim().length === 0) {
-      return res.status(400).json({ error: "Die Datei enthält keinen lesbaren Text." });
-    }
-
-    const truncated = text.slice(0, 8000); // Limit für Prompt
-
-    const summaryPrompt = `
-Lies den folgenden Dokumentinhalt und gib eine strukturierte Zusammenfassung.
-Markiere wichtige Punkte mit Bullet Points und hebe Fachbegriffe hervor.
-
-Dokument:
-${truncated}
-    `.trim();
-
-    const summary = await callProvider(
-      model,
-      summaryPrompt,
-      "Du bist AptiQ, ein KI-Assistent, der Dokumente klar und verständlich zusammenfasst."
-    );
-
-    res.json({
-      fileName: file.originalname,
-      model,
-      summary
+    const { data: authUser, error: signUpError } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true
     });
-  } catch (err) {
-    console.error("Upload/Analyse Fehler:", err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    // Temporäre Datei entfernen
-    try {
-      await fs.unlink(file.path);
-    } catch {
-      // ignorieren
-    }
+
+    if (signUpError) return res.status(400).json({ error: signUpError.message });
+
+    await supabase
+  .from("profiles")
+  .insert({ id: user.id, email: email, username: username });
+
+    return res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// =============================================
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () =>
-  console.log("AptiQ Backend läuft auf Port", PORT)
-);
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+  if (error) return res.status(400).json({ error: error.message });
+
+  const token = jwt.sign({ uid: data.user.id }, JWT_SECRET, { expiresIn: "7d" });
+
+  res.json({ token });
+});
+
+function auth(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ error: "Missing token" });
+
+  try {
+    const token = header.split(" ")[1];
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+// =============================
+// CHAT MESSAGES
+// =============================
+app.get("/messages", auth, async (req, res) => {
+  const { data } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("user_id", req.user.uid)
+    .order("created_at", { ascending: true });
+
+  res.json(data);
+});
+
+app.post("/message", auth, async (req, res) => {
+  const { content } = req.body;
+
+  await supabase.from("messages").insert({
+    user_id: req.user.uid,
+    content,
+    sender: "user"
+  });
+
+  const aiResponse = "AptiQ antwortet später hier...";
+
+  await supabase.from("messages").insert({
+    user_id: req.user.uid,
+    content: aiResponse,
+    sender: "assistant"
+  });
+
+  res.json({ reply: aiResponse });
+});
+
+// =============================
+// FILE UPLOADS
+// =============================
+app.post("/upload", auth, upload.single("file"), async (req, res) => {
+  const file = req.file;
+
+  const fileData = fs.readFileSync(file.path);
+
+  const { data: uploadResult, error: uploadError } = await supabase.storage
+    .from("user-files")
+    .upload(`${req.user.uid}/${file.originalname}`, fileData, {
+      contentType: file.mimetype
+    });
+
+  if (uploadError) return res.status(400).json({ error: uploadError.message });
+
+  await supabase.from("files").insert({
+    user_id: req.user.uid,
+    name: file.originalname,
+    path: uploadResult.path,
+    size: file.size,
+    mime_type: file.mimetype
+  });
+
+  fs.unlinkSync(file.path);
+
+  res.json({ success: true });
+});
+
+// =============================
+// ADMIN DASHBOARD
+// =============================
+app.get("/admin/users", auth, async (req, res) => {
+  const { data: me } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", req.user.uid)
+    .single();
+
+  if (me.role !== "admin") return res.status(403).json({ error: "Not admin" });
+
+  const { data: users } = await supabase.from("profiles").select("*");
+  res.json(users);
+});
+
+app.get("/admin/messages", auth, async (req, res) => {
+  const { data: me } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", req.user.uid)
+    .single();
+
+  if (me.role !== "admin") return res.status(403).json({ error: "Not admin" });
+
+  const { data } = await supabase.from("messages").select("*");
+  res.json(data);
+});
+
+app.get("/admin/files", auth, async (req, res) => {
+  const { data: me } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", req.user.uid)
+    .single();
+
+  if (me.role !== "admin") return res.status(403).json({ error: "Not admin" });
+
+  const { data } = await supabase.from("files").select("*");
+  res.json(data);
+});
+
+// =============================
+// SERVER START
+// =============================
+app.listen(3000, () => console.log("AptiQ backend running on port 3000"));
