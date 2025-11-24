@@ -7,21 +7,26 @@ dotenv.config();
 
 const app = express();
 
+// WICHTIG: Body Parser vor CORS
+app.use(express.json());
 app.use(cors({
   origin: ["https://nocxai.com", "http://localhost:5500"],
 }));
-app.use(express.json());
 
+// OpenAI Client
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+// Healthcheck
 app.get("/", (req, res) => {
   res.json({ status: "AptiQ Backend läuft auf Render ✅" });
 });
 
+// API Chat
 app.post("/api/chat", async (req, res) => {
   try {
+    console.log("BODY:", req.body); // DEBUG
     const { message } = req.body;
 
     if (!message) {
@@ -29,9 +34,9 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini-2024-07-18",
+      model: "gpt-4.1-mini",
       messages: [
-        { role: "system", content: "Du bist AptiQ, ein klarer, technischer Assistent von NoCxAI." },
+        { role: "system", content: "Du bist AptiQ, ein klarer, technischer Assistent." },
         { role: "user", content: message }
       ]
     });
@@ -45,7 +50,6 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// Render Port
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log("AptiQ Backend läuft auf Port", PORT);
-});
+app.listen(PORT, () => console.log("AptiQ Backend läuft auf Port", PORT));
