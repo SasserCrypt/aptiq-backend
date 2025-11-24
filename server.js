@@ -8,7 +8,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import multer from "multer";
-import pdf from "pdf-parse";
+import * as pdfParse from "pdf-parse";
 import fs from "fs/promises";
 import path from "path";
 
@@ -175,7 +175,7 @@ async function extractTextFromFile(filePath, originalName) {
 
   if (ext === ".pdf") {
     const data = await fs.readFile(filePath);
-    const pdfData = await pdf(data);
+    const pdfData = await pdfParse.default(data);
     return pdfData.text || "";
   }
 
