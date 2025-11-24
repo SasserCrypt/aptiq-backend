@@ -1,5 +1,6 @@
 // =============================
-// APTIQ – SERVER.JS (FINAL)
+// A P T I Q  –  BACKEND (FULL)
+// Custom Auth + Chat + Files + Admin
 // =============================
 
 import express from "express";
@@ -10,177 +11,434 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import multer from "multer";
 import fs from "fs";
+import crypto from "crypto";
+import path from "path";
 
 dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// ========= MIDDLEWARE =========
 app.use(cors());
 app.use(express.json());
 
-// SUPABASE CLIENT
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+// ========= SUPABASE CLIENT =========
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// JWT
-const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "user-files";
 
-// FILE UPLOAD HANDLER
+// ========= MULTER (UPLOAD TMP) =========
 const upload = multer({ dest: "uploads/" });
+
+// ========= HELFER =========
+
+function createToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role || "user",
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+
+function auth(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) {
+    return res.status(401).json({ error: "Fehlender Authorization Header" });
+  }
+
+  const token = header.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Fehlender Token" });
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload; // { id, email, role }
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Ungültiger Token" });
+  }
+}
+
+async function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: "Nicht eingeloggt" });
+
+  // zur Sicherheit vom DB-Status abhängig machen
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", req.user.id)
+    .single();
+
+  if (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Profil konnte nicht geladen werden" });
+  }
+
+  if (profile?.role !== "admin") {
+    return res.status(403).json({ error: "Admin-Rechte erforderlich" });
+  }
+
+  next();
+}
+
+// ========= HEALTH =========
+
+app.get("/", (req, res) => {
+  res.json({ ok: true, service: "AptiQ Backend", time: new Date().toISOString() });
+});
 
 // =============================
 // AUTH
 // =============================
+
+// REGISTER
 app.post("/register", async (req, res) => {
+  const { email, username, password } = req.body;
+
+  if (!email || !username || !password) {
+    return res.status(400).json({ error: "Bitte E-Mail, Benutzername und Passwort angeben." });
+  }
+
   try {
-    const { email, password, username } = req.body;
+    // Existiert E-Mail schon?
+    const { data: existing, error: existErr } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle();
 
-    const { data: authUser, error: signUpError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true
+    if (existErr) {
+      console.error(existErr);
+      return res.status(500).json({ error: "Fehler bei der Prüfung der E-Mail." });
+    }
+
+    if (existing) {
+      return res.status(409).json({ error: "E-Mail ist bereits registriert." });
+    }
+
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+    const id = crypto.randomUUID();
+
+    const { data: newUser, error: insertErr } = await supabase
+      .from("profiles")
+      .insert([
+        {
+          id,
+          email,
+          username,
+          password_hash: passwordHash,
+          role: "user",
+        },
+      ])
+      .select()
+      .single();
+
+    if (insertErr) {
+      console.error(insertErr);
+      return res.status(500).json({ error: "Registrierung fehlgeschlagen." });
+    }
+
+    const token = createToken(newUser);
+
+    return res.status(200).json({
+      message: "Registrierung erfolgreich.",
+      token,
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        username: newUser.username,
+        role: newUser.role,
+      },
     });
-
-    if (signUpError) return res.status(400).json({ error: signUpError.message });
-
-    await supabase
-  .from("profiles")
-  .insert({ id: user.id, email: email, username: username });
-
-    return res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  } catch (err) {
+    console.error("REGISTER ERROR:", err);
+    res.status(500).json({ error: "Serverfehler bei der Registrierung." });
   }
 });
 
+// LOGIN
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-
-  if (error) return res.status(400).json({ error: error.message });
-
-  const token = jwt.sign({ uid: data.user.id }, JWT_SECRET, { expiresIn: "7d" });
-
-  res.json({ token });
-});
-
-function auth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: "Missing token" });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Bitte E-Mail und Passwort angeben." });
+  }
 
   try {
-    const token = header.split(" ")[1];
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ error: "Invalid token" });
+    const { data: user, error } = await supabase
+      .from("profiles")
+      .select("id, email, username, role, password_hash")
+      .eq("email", email)
+      .single();
+
+    if (error || !user) {
+      return res.status(401).json({ error: "Ungültige Login-Daten." });
+    }
+
+    const match = await bcrypt.compare(password, user.password_hash || "");
+    if (!match) {
+      return res.status(401).json({ error: "Ungültige Login-Daten." });
+    }
+
+    const token = createToken(user);
+
+    res.json({
+      message: "Login erfolgreich.",
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+      },
+    });
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    res.status(500).json({ error: "Serverfehler beim Login." });
   }
-}
-
-// =============================
-// CHAT MESSAGES
-// =============================
-app.get("/messages", auth, async (req, res) => {
-  const { data } = await supabase
-    .from("messages")
-    .select("*")
-    .eq("user_id", req.user.uid)
-    .order("created_at", { ascending: true });
-
-  res.json(data);
 });
 
+// Aktuellen User holen
+app.get("/me", auth, async (req, res) => {
+  try {
+    const { data: user, error } = await supabase
+      .from("profiles")
+      .select("id, email, username, role, plan")
+      .eq("id", req.user.id)
+      .single();
+
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Profil konnte nicht geladen werden." });
+    }
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: "Serverfehler." });
+  }
+});
+
+// =============================
+// CHAT
+// =============================
+
+// Alle Nachrichten des Users
+app.get("/messages", auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Nachrichten konnten nicht geladen werden." });
+    }
+
+    res.json(data || []);
+  } catch (err) {
+    console.error("GET /messages:", err);
+    res.status(500).json({ error: "Serverfehler." });
+  }
+});
+
+// Neue Nachricht + AI-Antwort
 app.post("/message", auth, async (req, res) => {
   const { content } = req.body;
 
-  await supabase.from("messages").insert({
-    user_id: req.user.uid,
-    content,
-    sender: "user"
-  });
+  if (!content || !content.trim()) {
+    return res.status(400).json({ error: "Inhalt darf nicht leer sein." });
+  }
 
-  const aiResponse = "AptiQ antwortet später hier...";
+  try {
+    // User-Nachricht speichern
+    const { error: userMsgErr } = await supabase.from("messages").insert([
+      {
+        user_id: req.user.id,
+        content,
+        sender: "user",
+      },
+    ]);
 
-  await supabase.from("messages").insert({
-    user_id: req.user.uid,
-    content: aiResponse,
-    sender: "assistant"
-  });
+    if (userMsgErr) {
+      console.error(userMsgErr);
+      return res.status(500).json({ error: "Nachricht konnte nicht gespeichert werden." });
+    }
 
-  res.json({ reply: aiResponse });
+    // HIER später: richtiger AI-Call (OpenAI / eigenes LLM)
+    const aiText =
+      'AptiQ hat deine Nachricht erhalten:\n\n"' +
+      content.slice(0, 160) +
+      '"\n\nDie echte KI-Antwort wird hier später eingefügt.';
+
+    const { error: aiMsgErr } = await supabase.from("messages").insert([
+      {
+        user_id: req.user.id,
+        content: aiText,
+        sender: "assistant",
+      },
+    ]);
+
+    if (aiMsgErr) {
+      console.error(aiMsgErr);
+      return res.status(500).json({ error: "AI-Antwort konnte nicht gespeichert werden." });
+    }
+
+    res.json({ reply: aiText });
+  } catch (err) {
+    console.error("POST /message:", err);
+    res.status(500).json({ error: "Serverfehler." });
+  }
 });
 
 // =============================
-// FILE UPLOADS
+// FILE UPLOAD
 // =============================
+
 app.post("/upload", auth, upload.single("file"), async (req, res) => {
   const file = req.file;
+  if (!file) return res.status(400).json({ error: "Keine Datei hochgeladen." });
 
-  const fileData = fs.readFileSync(file.path);
+  try {
+    const fileBuffer = fs.readFileSync(file.path);
+    const ext = path.extname(file.originalname);
+    const safeName = `${req.user.id}/${Date.now()}_${Math.round(
+      Math.random() * 1e6
+    )}${ext}`;
 
-  const { data: uploadResult, error: uploadError } = await supabase.storage
-    .from("user-files")
-    .upload(`${req.user.uid}/${file.originalname}`, fileData, {
-      contentType: file.mimetype
-    });
+    const { data: uploadResult, error: uploadErr } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(safeName, fileBuffer, {
+        contentType: file.mimetype,
+        upsert: false,
+      });
 
-  if (uploadError) return res.status(400).json({ error: uploadError.message });
+    fs.unlinkSync(file.path); // tmp löschen
 
-  await supabase.from("files").insert({
-    user_id: req.user.uid,
-    name: file.originalname,
-    path: uploadResult.path,
-    size: file.size,
-    mime_type: file.mimetype
-  });
+    if (uploadErr) {
+      console.error(uploadErr);
+      return res.status(500).json({ error: "Upload zu Supabase Storage fehlgeschlagen." });
+    }
 
-  fs.unlinkSync(file.path);
+    const { error: insertErr } = await supabase.from("files").insert([
+      {
+        user_id: req.user.id,
+        name: file.originalname,
+        path: uploadResult.path,
+        size: file.size,
+        mime_type: file.mimetype,
+      },
+    ]);
 
-  res.json({ success: true });
+    if (insertErr) {
+      console.error(insertErr);
+      return res.status(500).json({ error: "Datei-Metadaten konnten nicht gespeichert werden." });
+    }
+
+    res.json({ success: true, path: uploadResult.path });
+  } catch (err) {
+    console.error("POST /upload:", err);
+    res.status(500).json({ error: "Serverfehler beim Upload." });
+  }
+});
+
+// Dateien des Users auflisten
+app.get("/files", auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("files")
+      .select("*")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Dateien konnten nicht geladen werden." });
+    }
+
+    res.json(data || []);
+  } catch (err) {
+    console.error("GET /files:", err);
+    res.status(500).json({ error: "Serverfehler." });
+  }
 });
 
 // =============================
-// ADMIN DASHBOARD
+// ADMIN ROUTES
 // =============================
-app.get("/admin/users", auth, async (req, res) => {
-  const { data: me } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", req.user.uid)
-    .single();
 
-  if (me.role !== "admin") return res.status(403).json({ error: "Not admin" });
+app.get("/admin/users", auth, requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, email, username, role, plan, created_at");
 
-  const { data: users } = await supabase.from("profiles").select("*");
-  res.json(users);
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Benutzer konnten nicht geladen werden." });
+    }
+
+    res.json(data || []);
+  } catch (err) {
+    console.error("GET /admin/users:", err);
+    res.status(500).json({ error: "Serverfehler." });
+  }
 });
 
-app.get("/admin/messages", auth, async (req, res) => {
-  const { data: me } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", req.user.uid)
-    .single();
+app.get("/admin/messages", auth, requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-  if (me.role !== "admin") return res.status(403).json({ error: "Not admin" });
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Nachrichten konnten nicht geladen werden." });
+    }
 
-  const { data } = await supabase.from("messages").select("*");
-  res.json(data);
+    res.json(data || []);
+  } catch (err) {
+    console.error("GET /admin/messages:", err);
+    res.status(500).json({ error: "Serverfehler." });
+  }
 });
 
-app.get("/admin/files", auth, async (req, res) => {
-  const { data: me } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", req.user.uid)
-    .single();
+app.get("/admin/files", auth, requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("files")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-  if (me.role !== "admin") return res.status(403).json({ error: "Not admin" });
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Dateien konnten nicht geladen werden." });
+    }
 
-  const { data } = await supabase.from("files").select("*");
-  res.json(data);
+    res.json(data || []);
+  } catch (err) {
+    console.error("GET /admin/files:", err);
+    res.status(500).json({ error: "Serverfehler." });
+  }
 });
 
 // =============================
-// SERVER START
+// START SERVER
 // =============================
-app.listen(3000, () => console.log("AptiQ backend running on port 3000"));
+
+app.listen(PORT, () => {
+  console.log(`AptiQ Backend läuft auf Port ${PORT}`);
+});
