@@ -29,7 +29,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-4o-mini-2024-07-18",
       messages: [
         { role: "system", content: "Du bist AptiQ, ein klarer, technischer Assistent von NoCxAI." },
         { role: "user", content: message }
