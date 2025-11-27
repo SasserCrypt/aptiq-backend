@@ -150,12 +150,13 @@ app.post("/register", async (req, res) => {
       .single();
 
     if (error) {
-      console.error("Registrierungsfehler:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Fehler beim Erstellen des Benutzers."
-      });
-    }
+  console.error("REGISTER ERROR FROM SUPABASE:", error);
+  return res.status(500).json({
+    success: false,
+    message: error.message || "Fehler beim Erstellen des Benutzers.",
+    details: error.details || null
+  });
+}
 
     return res.json({
       success: true,
