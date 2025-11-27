@@ -13,6 +13,9 @@ import multer from "multer";
 import fs from "fs";
 import crypto from "crypto";
 import path from "path";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -105,69 +108,73 @@ app.get("/", (req, res) => {
 // AUTH
 // =============================
 
+// =======================================
 // REGISTER
+// =======================================
 app.post("/register", async (req, res) => {
-  const { email, username, password } = req.body;
-
-  if (!email || !username || !password) {
-    return res.status(400).json({ error: "Bitte E-Mail, Benutzername und Passwort angeben." });
-  }
-
   try {
-    // Existiert E-Mail schon?
-    const { data: existing, error: existErr } = await supabase
+    const { email, password, name } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email und Passwort sind erforderlich."
+      });
+    }
+
+    // Prüfen, ob User bereits existiert
+    const existing = await supabase
       .from("profiles")
-      .select("id")
+      .select("*")
       .eq("email", email)
-      .maybeSingle();
+      .single();
 
-    if (existErr) {
-      console.error(existErr);
-      return res.status(500).json({ error: "Fehler bei der Prüfung der E-Mail." });
+    if (existing.data) {
+      return res.status(400).json({
+        success: false,
+        message: "Diese Email existiert bereits."
+      });
     }
 
-    if (existing) {
-      return res.status(409).json({ error: "E-Mail ist bereits registriert." });
-    }
+    // Passwort hashen
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(password, saltRounds);
-    const id = crypto.randomUUID();
-
-    const { data: newUser, error: insertErr } = await supabase
+    // Benutzer speichern
+    const { data, error } = await supabase
       .from("profiles")
       .insert([
         {
-          id,
-          email,
-          username,
-          password_hash: passwordHash,
-          role: "user",
-        },
+          email: email,
+          password: hashedPassword,
+          name: name || "AptiQ User"
+        }
       ])
       .select()
       .single();
 
-    if (insertErr) {
-      console.error(insertErr);
-      return res.status(500).json({ error: "Registrierung fehlgeschlagen." });
+    if (error) {
+      console.error("Registrierungsfehler:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Fehler beim Erstellen des Benutzers."
+      });
     }
 
-    const token = createToken(newUser);
-
-    return res.status(200).json({
-      message: "Registrierung erfolgreich.",
-      token,
+    return res.json({
+      success: true,
       user: {
-        id: newUser.id,
-        email: newUser.email,
-        username: newUser.username,
-        role: newUser.role,
-      },
+        id: data.id,
+        email: data.email,
+        name: data.name,
+      }
     });
+
   } catch (err) {
     console.error("REGISTER ERROR:", err);
-    res.status(500).json({ error: "Serverfehler bei der Registrierung." });
+    res.status(500).json({
+      success: false,
+      message: "Interner Fehler."
+    });
   }
 });
 
