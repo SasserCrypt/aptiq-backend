@@ -13,9 +13,6 @@ import multer from "multer";
 import fs from "fs";
 import crypto from "crypto";
 import path from "path";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
