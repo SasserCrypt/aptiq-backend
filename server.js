@@ -16,6 +16,12 @@ import path from "path";
 
 dotenv.config();
 
+console.log("🔧 DEBUG: Render ENV check");
+console.log("SUPABASE_URL =", process.env.SUPABASE_URL);
+console.log("SUPABASE_SERVICE_ROLE_KEY =", process.env.SUPABASE_SERVICE_ROLE_KEY);
+console.log("SUPABASE_SERVICE_ROLE =", process.env.SUPABASE_SERVICE_ROLE);
+console.log("All env keys:", Object.keys(process.env));
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
