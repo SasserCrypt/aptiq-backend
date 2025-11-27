@@ -276,10 +276,79 @@ app.post("/message", auth, async (req, res) => {
     }
 
     // HIER später: richtiger AI-Call (OpenAI / eigenes LLM)
-    const aiText =
-      'AptiQ hat deine Nachricht erhalten:\n\n"' +
-      content.slice(0, 160) +
-      '"\n\nDie echte KI-Antwort wird hier später eingefügt.';
+    // ========= KI-Antwort erzeugen =========
+
+// Optional: RAG vorbereiten (Platzhalter – wir bauen es später ein)
+// const context = await buildRAGContext(req.user.id, content);
+
+let aiText = "";
+
+try {
+  // ================ OpenAI ================
+  if (process.env.OPENAI_API_KEY) {
+    const completion = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Du bist AptiQ – die KI von NoCxAI. Antworte klar, hilfsbereit und modern." },
+          { role: "user", content: content }
+        ]
+      })
+    });
+
+    const json = await completion.json();
+    aiText = json?.choices?.[0]?.message?.content || "Fehler: Keine Antwort erhalten.";
+  }
+
+  // ================ Groq ================
+  else if (process.env.GROQ_API_KEY) {
+    const completion = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "mixtral-8x7b-32768",
+        messages: [
+          { role: "system", content: "Du bist AptiQ – die moderne KI von NoCxAI." },
+          { role: "user", content: content }
+        ]
+      })
+    });
+
+    const json = await completion.json();
+    aiText = json?.choices?.[0]?.message?.content || "Fehler: Keine Antwort erhalten.";
+  }
+
+  // ================ HuggingFace ================
+  else if (process.env.HF_API_KEY && process.env.HF_MODEL) {
+    const hfRes = await fetch(`https://api-inference.huggingface.co/models/${process.env.HF_MODEL}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.HF_API_KEY}`,
+      },
+      body: JSON.stringify({ inputs: content })
+    });
+
+    const json = await hfRes.json();
+    aiText = json?.[0]?.generated_text || "Fehler: Keine Antwort erhalten.";
+  }
+
+  else {
+    aiText = "⚠️ Kein KI-Anbieter konfiguriert. Bitte OPENAI_API_KEY, GROQ_API_KEY oder HF_API_KEY setzen.";
+  }
+} catch (e) {
+  console.error("AI ERROR:", e);
+  aiText = "⚠️ Fehler bei der KI-Anfrage.";
+}
+
 
     const { error: aiMsgErr } = await supabase.from("messages").insert([
       {
