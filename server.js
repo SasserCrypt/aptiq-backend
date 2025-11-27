@@ -6,7 +6,7 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import multer from "multer";
 import fs from "fs";
